@@ -9,6 +9,7 @@ for ver in $(dkms status "$PKG" 2>/dev/null | sed -n 's#^[^/]*/\([^,:]*\).*#\1#p
     dkms remove "$PKG/$ver" --all || true
     rm -rf "/usr/src/$PKG-$ver"
 done
+rm -f /etc/udev/rules.d/72-libcamera-udmabuf.rules && udevadm control --reload
 depmod -a
 echo "==> ov05c10 that will load: $(modinfo -n ov05c10 2>/dev/null || echo none)"
 echo "==> Reboot to switch back to the stock driver."

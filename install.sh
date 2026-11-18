@@ -84,7 +84,15 @@ dkms build "$PKG/$VER" -k "$KVER"
 dkms install "$PKG/$VER" -k "$KVER" --force
 depmod -a "$KVER"
 
-# --- 6. result ---------------------------------------------------------------
+# --- 6. udmabuf access for libcamera's software ISP --------------------------
+say "Installing udev rule for /dev/udmabuf (video group access)"
+install -m 644 "$SRC_DIR/udev/72-libcamera-udmabuf.rules" /etc/udev/rules.d/
+udevadm control --reload
+[ -e /dev/udmabuf ] && setfacl -m g:video:rw /dev/udmabuf
+id -nG "${SUDO_USER:-root}" | grep -qw video || \
+    warn "user ${SUDO_USER:-?} is not in the 'video' group: sudo usermod -aG video ${SUDO_USER:-<user>} (then log out/in)"
+
+# --- 7. result ---------------------------------------------------------------
 active=$(modinfo -n ov05c10 2>/dev/null || true)
 echo
 dkms status "$PKG"

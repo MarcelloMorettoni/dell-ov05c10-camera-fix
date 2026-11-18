@@ -88,6 +88,8 @@ options ov05c10 power_peer=
   ```
 - `dkms` and kernel headers. `install.sh` installs them if they're missing.
 
+- Access to `/dev/udmabuf` for libcamera's software ISP. `install.sh` adds a udev rule giving the `video` group access, so it also works when PipeWire starts before login.
+
 Intel's proprietary HAL (`libcamhal`, `icamerasrc`, `v4l2-relayd`) is **not** needed. Everything works through libcamera.
 
 ## Install
@@ -147,6 +149,7 @@ sudo reboot
 
 | Symptom | What to try |
 |---|---|
+| Worked before reboot, "camera unavailable" after; `journalctl --user -u wireplumber` shows `Could not open any dma-buf provider` / `disabling software debayering` | PipeWire started before you logged in (user lingering, `loginctl show-user $USER -p Linger`) and couldn't open `/dev/udmabuf`. `install.sh` installs `udev/72-libcamera-udmabuf.rules`, which fixes this permanently. Quick fix: `systemctl --user restart pipewire pipewire-pulse wireplumber`. |
 | The first capture right after install/reload times out | Close and reopen the app. The first stream after a driver (re)load was occasionally flaky in testing; later ones worked every time. |
 | `modinfo -n ov05c10` doesn't point to `updates/dkms` | Another package ships an override; check `dkms status` and `ls /lib/modules/$(uname -r)/updates/`. |
 | Module fails to load (`Key was rejected by service`) | The MOK isn't enrolled; see [Secure Boot](#secure-boot). |

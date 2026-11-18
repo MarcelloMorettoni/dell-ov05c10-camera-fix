@@ -44,5 +44,13 @@ for r in /sys/class/regulator/regulator.*; do
     echo "$(cat $r/name): state=$(cat $r/state) users=$(cat $r/num_users) consumers: $(ls $r | grep -iE 'ovti|himx' | tr '\n' ' ')"
 done
 
+section "libcamera software ISP buffers"
+ls -l /dev/udmabuf 2>/dev/null; getfacl -p /dev/udmabuf 2>/dev/null | grep -E '^(user|group):[a-z]'
+echo "user lingering: $(loginctl show-user "${SUDO_USER:-$USER}" -p Linger --value 2>/dev/null)"
+if [ -n "${SUDO_USER:-}" ]; then UJ=(sudo -u "$SUDO_USER" journalctl --user); else UJ=(journalctl --user); fi
+"${UJ[@]}" -b --no-pager -u wireplumber -u pipewire 2>/dev/null \
+    | grep -E 'DmaBufAllocator|software ISP' | tail -3
+echo "(any 'Could not open any dma-buf provider' above = camera unavailable in apps)"
+
 section "PipeWire cameras"
 wpctl status 2>/dev/null | sed -n '/^Video/,/^Settings/p' | head -15

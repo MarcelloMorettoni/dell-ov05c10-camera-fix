@@ -1,0 +1,15 @@
+# dell-ov05c10-camera-fix
+#
+# libcamera's software ISP (needed to turn the raw OV05C10 Bayer data into a
+# usable picture) allocates buffers from /dev/udmabuf. Ubuntu makes that node
+# root:kvm 0660 and only grants the logged-in user access through a logind
+# "uaccess" ACL once the desktop session is active.
+#
+# If PipeWire/WirePlumber start before that (user lingering enabled, e.g. for
+# rootless Docker/Podman), libcamera can't open it, logs
+#   ERROR DmaBufAllocator ... Could not open any dma-buf provider
+#   WARN  Failed to create software ISP, disabling software debayering
+# and apps report the camera as unavailable until PipeWire is restarted.
+#
+# Also grant the "video" group access (the kvm group keeps its access).
+KERNEL=="udmabuf", RUN+="/usr/bin/setfacl -m g:video:rw $devnode"
