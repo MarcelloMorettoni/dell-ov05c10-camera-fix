@@ -1,6 +1,6 @@
 # dell-ov05c10-camera-fix
 
-A patched Linux driver that makes the built-in webcam work on the **Dell Pro 14 Plus (PB14250)**. It may also help other Intel IPU6 laptops where an **OmniVision OV05C10** RGB sensor shares its power controller with a **Himax HM1092** IR sensor.
+A patched Linux driver that makes the built-in webcam work on the **Dell Pro 14 Plus (PB14250)** with Ubuntu's 7.0 kernel. It may also help other Intel IPU6 laptops with an **OmniVision OV05C10** RGB sensor next to a **Himax HM1092** IR sensor.
 
 It ships as a DKMS module, so it rebuilds itself after every kernel update and is signed for Secure Boot.
 
@@ -22,7 +22,7 @@ You probably are if **all** of these are true:
   intel_ipu6_isys.isys intel_ipu6.isys.40: stream stop time out
   intel_ipu6_isys.isys intel_ipu6.isys.40: stream close time out
   ```
-- This prints `INT3472:...-dvdd -> i2c-HIMX1092:00...`, i.e. the camera's power rail is assigned to the IR sensor instead of the RGB sensor:
+- This prints `INT3472:...-dvdd -> i2c-HIMX1092:00...`, i.e. the only camera power rail the kernel knows about is assigned to the IR sensor, and the RGB sensor has none:
   ```bash
   sudo grep -i int3472 /sys/kernel/debug/regulator/supply_map
   ```
@@ -33,21 +33,21 @@ Run `sudo ./scripts/diagnose.sh` to check all of this at once.
 
 Dell certifies this laptop for Ubuntu 24.04 LTS with Canonical's OEM camera stack. On newer releases (Ubuntu 26.04, kernel 7.0) the camera was detected but never delivered a single frame. I tried both camera stacks, Intel's proprietary HAL (`icamerasrc`) and libcamera, and both timed out the same way. Every driver was loaded and the sensor answered on I2C, yet nothing came out.
 
-The sensor was simply never switched on properly. It took a day of digging through kernel debugfs and the laptop's ACPI tables to find out why. This repo packages the fix so nobody else has to repeat that.
+It took a day of digging through kernel debugfs and the laptop's ACPI tables to find something that works. This repo packages it, mostly for fun and in case it saves someone else that day.
 
-## Root cause
+## What we found
 
-The camera module contains two sensors that share **one** ACPI power device, `INT3472` / `\_SB.PC00.DSC0`:
+The camera module has two sensors:
 
 | ACPI device | Sensor | Role |
 |---|---|---|
 | `OVTI05C1` (`LNK1`) | OmniVision OV05C10, 5 MP | RGB webcam |
 | `HIMX1092` (`LNK0`) | Himax HM1092 | IR (face login) |
 
-The kernel's `int3472` driver registers the shared resources, but maps them **only to the first consumer it finds**, which is `HIMX1092`:
+There is exactly one enabled ACPI camera power device, `INT3472:0c` (`\_SB.PC00.DSC0`). The kernel's `int3472` driver assigns its resources to `HIMX1092`:
 
-- the **`dvdd` handshake regulator**, a GPIO on the USB-IO bridge (`INTC10B5`). It powers the sensor and signals the Intel vision chip (`INTC10E0`, "CVS") that the host wants to stream.
-- the **19.2 MHz sensor master clock**, enabled through an ACPI `_DSM` method.
+- a **`dvdd` handshake regulator**, a GPIO on the USB-IO bridge (`INTC10B5`, the Synaptics SVP7500).
+- a **19.2 MHz clock**, enabled through an ACPI `_DSM` method.
 
 ```
 # /sys/kernel/debug/regulator/supply_map
@@ -57,11 +57,15 @@ INT3472:0c-dvdd -> i2c-HIMX1092:00.dvdd
 INT3472:0c-clk   0  0  0  19200000 ... deviceless  no_connection_id
 ```
 
-The `ov05c10` driver treats both resources as optional. When it doesn't find them it silently continues, and starts streaming a sensor that is unclocked and never got its power handshake. The sensor still answers on I2C, so nothing obviously fails. The IPU6 just never receives a frame.
+So the `ov05c10` driver finds no regulator and no clock of its own. It treats both as optional, carries on, and starts streaming. The sensor answers on I2C, but the IPU6 never receives a frame.
+
+**What is proven:** letting `ov05c10` switch on that clock and regulator while it streams makes the camera work, reliably and across reboots, on Ubuntu's 7.0 kernel.
+
+**What isn't:** *why*. One reading is that `int3472` should have shared these resources with both sensors. Another, raised by others working on this laptop family, is that `INT3472:0c` is simply the IR camera's own power device, and the RGB sensor is meant to be powered and clocked through the Intel vision chip (`INTC10E0`, "CVS"). Ubuntu 7.0's older out-of-tree CVS driver may not do that, and borrowing the IR device's resources happens to cover the gap. I haven't proven either reading. Treat this as a working workaround, not a diagnosis.
 
 ## The fix
 
-`ov05c10.c` is Intel's latest upstream driver from [intel/ipu6-drivers](https://github.com/intel/ipu6-drivers), commit `e52f5e8` (which includes `b4622b1`, "update command to meet CVS"), plus one small change. When the driver finds **no** `dvdd` regulator or clock of its own, it borrows the ones mapped to the IR sensor:
+`ov05c10.c` is Intel's latest upstream driver from [intel/ipu6-drivers](https://github.com/intel/ipu6-drivers), commit `e52f5e8` (which includes `b4622b1`, "update command to meet CVS"), plus one small change. When the driver finds **no** `dvdd` regulator or clock of its own, it borrows the ones assigned to the IR sensor:
 
 - **`dvdd` regulator:** a regulator *supply alias* from `i2c-OVTI05C1:00` to `i2c-HIMX1092:00`.
 - **Clock:** `clk_get_sys("i2c-HIMX1092:00", NULL)`.
@@ -167,7 +171,14 @@ Please open an issue with the output of `sudo ./scripts/diagnose.sh` if it doesn
 
 ## Upstream
 
-This is a workaround. The proper fix belongs in the kernel's `int3472` driver, which should map shared resources to every sensor on the power device, or in Intel's `ov05c10`. It has been reported upstream to [intel/ipu6-drivers](https://github.com/intel/ipu6-drivers/issues) (link to the issue to follow). Related: intel/ipu6-drivers#417, intel/ipu7-drivers#26, Launchpad bug [#2147409](https://bugs.launchpad.net/bugs/2147409).
+This is an independent workaround for **Ubuntu's 7.0 kernel**. It hasn't been submitted upstream.
+
+On **newer mainline kernels (7.2+)** the picture is different, and other people have got this laptop family working another way. Look there first if you're not on Ubuntu 7.0:
+
+- [intel/ipu6-drivers#426](https://github.com/intel/ipu6-drivers/issues/426): community thread for the Dell Pro 14/16 Plus and Pro Max 16 (SVP7500 bridge). It covers the `spd5118` blacklist, `ov05c10` patches and the CVS privacy LED.
+- [intel/ipu6-drivers#466](https://github.com/intel/ipu6-drivers/pull/466): `ov05c10` fixes for mainline (accept a 480 MHz-only link frequency, runtime-PM underflow). Not merged at the time of writing.
+
+Also related: intel/ipu6-drivers#417, intel/ipu7-drivers#26, Launchpad bug [#2147409](https://bugs.launchpad.net/bugs/2147409).
 
 ## Credits and license
 
