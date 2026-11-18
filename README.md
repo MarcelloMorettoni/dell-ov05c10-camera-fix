@@ -4,6 +4,11 @@ A patched Linux driver that makes the built-in webcam work on the **Dell Pro 14 
 
 It ships as a DKMS module, so it rebuilds itself after every kernel update and is signed for Secure Boot.
 
+> [!IMPORTANT]
+> **Please try the official route first.** I built this for fun, to learn how Linux camera drivers work and to figure out my own laptop. For real-world use I recommend Intel's official [intel/ipu6-drivers](https://github.com/intel/ipu6-drivers) and your distribution's packages. The community work in [intel/ipu6-drivers#426](https://github.com/intel/ipu6-drivers/issues/426) is also further along for newer kernels.
+>
+> You're very welcome to use this repo anyway: to get your camera going on Ubuntu's 7.0 kernel, or just to tinker and learn.
+
 > Tested on: Dell Pro 14 Plus PB14250 (SKU 0CE8, BIOS 2.18.1), Intel Core Ultra 7 255U, Ubuntu 26.04.1, kernel 7.0.0-43-generic, GNOME Snapshot via PipeWire + libcamera.
 
 ---
