@@ -1,0 +1,120 @@
+--- a/drivers/media/i2c/ov05c10.c
++++ b/drivers/media/i2c/ov05c10.c
+@@ -7,6 +7,7 @@
+ #include <linux/i2c.h>
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
+ #include <linux/units.h>
+ #include <linux/regmap.h>
+ #include <linux/version.h>
+@@ -980,6 +981,86 @@
+ 	return 0;
+ }
+ 
++/*
++ * dell-ov05c10-camera-fix: shared INT3472 power/clock workaround.
++ *
++ * On the Dell Pro 14 Plus PB14250 (and possibly other designs pairing an
++ * OV05C10 RGB sensor with a Himax HM1092 IR sensor) a single INT3472
++ * discrete power device (DSC0) serves both sensors. The int3472 driver maps
++ * its "dvdd" handshake regulator and its MCLK only to the first consumer it
++ * finds (HIMX1092), so this driver gets neither and streams with the sensor
++ * unpowered/unclocked: no frames, "stream stop time out" in the IPU6 ISYS.
++ *
++ * When no dvdd regulator / clock is found for our own device, borrow the ones
++ * mapped to the peer device named by the "power_peer" module parameter.
++ * Set power_peer="" to disable the workaround.
++ */
++static char *power_peer = "i2c-HIMX1092:00";
++module_param(power_peer, charp, 0444);
++MODULE_PARM_DESC(power_peer,
++		 "I2C device whose INT3472 dvdd/clock to borrow when none is mapped to us (\"\" disables)");
++
++static void ov05c10_put_peer(void *data)
++{
++	put_device(data);
++}
++
++static void ov05c10_put_clk(void *data)
++{
++	clk_put(data);
++}
++
++static void ov05c10_borrow_peer_clk(struct device *dev, struct clk **clk)
++{
++	struct clk *c;
++
++	if (!power_peer || !*power_peer)
++		return;
++	c = clk_get_sys(power_peer, NULL);
++	if (IS_ERR(c)) {
++		dev_warn(dev, "no clock from %s: %ld\n", power_peer,
++			 PTR_ERR(c));
++		return;
++	}
++	if (devm_add_action_or_reset(dev, ov05c10_put_clk, c))
++		return;
++	*clk = c;
++	dev_info(dev, "using shared clock from %s (%lu Hz)\n",
++		 power_peer, clk_get_rate(c));
++}
++
++static void ov05c10_borrow_peer_dvdd(struct device *dev,
++				     struct regulator **dvdd)
++{
++	struct device *peer;
++	int ret;
++
++	if (!power_peer || !*power_peer)
++		return;
++	peer = bus_find_device_by_name(&i2c_bus_type, NULL, power_peer);
++	if (!peer)
++		return;
++	if (devm_add_action_or_reset(dev, ov05c10_put_peer, peer))
++		return;
++
++	ret = devm_regulator_register_supply_alias(dev, "dvdd", peer, "dvdd");
++	if (ret) {
++		dev_warn(dev, "dvdd alias to %s failed: %d\n",
++			 power_peer, ret);
++		return;
++	}
++
++	*dvdd = devm_regulator_get_optional(dev, "dvdd");
++	if (IS_ERR(*dvdd)) {
++		dev_warn(dev, "shared dvdd from %s not usable: %ld\n",
++			 power_peer, PTR_ERR(*dvdd));
++		*dvdd = NULL;
++		return;
++	}
++	dev_info(dev, "using shared dvdd regulator from %s\n",
++		 power_peer);
++}
++
+ /* This function tries to get power control resources */
+ static int ov05c10_get_pm_resources(struct device *dev)
+ {
+@@ -991,6 +1072,8 @@
+ 	if (IS_ERR(ov05c10->img_clk))
+ 		return dev_err_probe(dev, PTR_ERR(ov05c10->img_clk),
+ 				     "failed to get imaging clock\n");
++	if (!ov05c10->img_clk)
++		ov05c10_borrow_peer_clk(dev, &ov05c10->img_clk);
+ 
+ 	ov05c10->avdd = devm_regulator_get_optional(dev, "avdd");
+ 	if (IS_ERR(ov05c10->avdd)) {
+@@ -1009,6 +1092,8 @@
+ 			return dev_err_probe(dev, ret,
+ 					     "failed to get dvdd regulator\n");
+ 	}
++	if (!ov05c10->dvdd)
++		ov05c10_borrow_peer_dvdd(dev, &ov05c10->dvdd);
+ 
+ 	ov05c10->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+ 	if (IS_ERR(ov05c10->reset))
+@@ -1211,3 +1296,4 @@
+ MODULE_DESCRIPTION("OmniVision ov05c10 camera driver");
+ MODULE_AUTHOR("Dongcheng Yan <dongcheng.yan@intel.com>");
+ MODULE_LICENSE("GPL");
++MODULE_VERSION("1.0.0-dell-ov05c10-camera-fix");
